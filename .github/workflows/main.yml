@@ -1,8 +1,8 @@
 name: Build KOReader (bookeen)
 
-# Build do KOReader para o Saraiva Lev (port oficial "bookeen") usando a imagem de
-# cross-compile indicada em docs/BUILD-KOREADER.md do repositório saraiva-lev-koreader.
-# Roda na nuvem (runner Ubuntu do GitHub), sem instalar nada no PC do dono.
+# Build do KOReader para o Saraiva Lev (port oficial "bookeen") na nuvem.
+# Usa a imagem de cross-compile de docs/BUILD-KOREADER.md, mas via `docker run` explicito
+# (o modo "job container" do Actions falhou ao iniciar; docker run e mais robusto).
 #
 # Uso: Actions > "Build KOReader (bookeen)" > Run workflow.
 # Resultado: artifact "koreader-bookeen" com koreader-bookeen-*.zip + SHA256.txt.
@@ -14,56 +14,67 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    container:
-      image: koreader/kobookeen:5.0.0-22.04
-      options: --user root
 
     steps:
-      - name: Preparar ambiente
+      - name: Diagnostico do runner
         run: |
-          set -euo pipefail
-          mkdir -p /build
-          git config --global --add safe.directory '*'
-          git --version
-          ( gcc --version | head -1 ) || true
+          uname -a
+          docker --version
+          nproc
+          free -h
           df -h /
 
-      - name: Clonar koreader e koreader-base (commits fixados)
-        working-directory: /build
+      - name: Baixar a imagem de cross-compile
         run: |
           set -euo pipefail
-          git clone https://github.com/koreader/koreader.git
-          cd koreader
-          git checkout 400ba0e65c
-          git submodule update --init --depth 1 base
-          cd base
-          git checkout 33b43b5b21a2f2aa7a8b5ad53b6d83d3954f51c0
-          cd ..
+          for i in 1 2 3; do
+            docker pull koreader/kobookeen:5.0.0-22.04 && break
+            echo "pull falhou (tentativa $i), esperando 10s..."; sleep 10
+          done
+          docker image inspect koreader/kobookeen:5.0.0-22.04 --format '{{.Architecture}} {{.Os}}' | tee /tmp/img_arch.txt
+          grep -q amd64 /tmp/img_arch.txt
 
-      - name: Baixar dependências e compilar para bookeen
-        working-directory: /build/koreader
+      - name: Compilar dentro do container
         run: |
           set -euo pipefail
-          ./kodev fetch-thirdparty
-          ./kodev build bookeen
-          ./kodev release bookeen
+          mkdir -p "$PWD/src" "$PWD/out"
+          docker run --rm --user root \
+            -v "$PWD/src:/src" \
+            -v "$PWD/out:/out" \
+            koreader/kobookeen:5.0.0-22.04 \
+            bash -lc '
+              set -euxo pipefail
+              git config --global --add safe.directory "*"
+              cd /src
+              git clone https://github.com/koreader/koreader.git
+              cd koreader
+              git checkout 400ba0e65c
+              git submodule update --init --depth 1 base
+              cd base
+              git checkout 33b43b5b21a2f2aa7a8b5ad53b6d83d3954f51c0
+              cd ..
+              ./kodev fetch-thirdparty
+              ./kodev build bookeen
+              ./kodev release bookeen
+              file luajit
+              cp koreader-bookeen-*.zip /out/
+              cd /out
+              sha256sum koreader-bookeen-*.zip | tee SHA256.txt
+            '
 
-      - name: Conferir binário ARM e gerar sha256
-        working-directory: /build/koreader
+      - name: Conferencias finais
         run: |
           set -euo pipefail
-          file luajit
-          file luajit | grep -qi 'ARM'
-          ls -l koreader-bookeen-*.zip
-          sha256sum koreader-bookeen-*.zip | tee /build/SHA256.txt
-          unzip -l koreader-bookeen-*.zip | head -20
+          ls -l out/
+          unzip -l out/koreader-bookeen-*.zip | head -20
+          df -h /
 
       - name: Publicar artifact
         uses: actions/upload-artifact@v4
         with:
           name: koreader-bookeen
           path: |
-            /build/koreader/koreader-bookeen-*.zip
-            /build/SHA256.txt
+            out/koreader-bookeen-*.zip
+            out/SHA256.txt
           if-no-files-found: error
           retention-days: 30
