@@ -1,0 +1,69 @@
+name: Build KOReader (bookeen)
+
+# Build do KOReader para o Saraiva Lev (port oficial "bookeen") usando a imagem de
+# cross-compile indicada em docs/BUILD-KOREADER.md do repositório saraiva-lev-koreader.
+# Roda na nuvem (runner Ubuntu do GitHub), sem instalar nada no PC do dono.
+#
+# Uso: Actions > "Build KOReader (bookeen)" > Run workflow.
+# Resultado: artifact "koreader-bookeen" com koreader-bookeen-*.zip + SHA256.txt.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: koreader/kobookeen:5.0.0-22.04
+      options: --user root
+
+    steps:
+      - name: Preparar ambiente
+        run: |
+          set -euo pipefail
+          mkdir -p /build
+          git config --global --add safe.directory '*'
+          git --version
+          ( gcc --version | head -1 ) || true
+          df -h /
+
+      - name: Clonar koreader e koreader-base (commits fixados)
+        working-directory: /build
+        run: |
+          set -euo pipefail
+          git clone https://github.com/koreader/koreader.git
+          cd koreader
+          git checkout 400ba0e65c
+          git submodule update --init --depth 1 base
+          cd base
+          git checkout 33b43b5b21a2f2aa7a8b5ad53b6d83d3954f51c0
+          cd ..
+
+      - name: Baixar dependências e compilar para bookeen
+        working-directory: /build/koreader
+        run: |
+          set -euo pipefail
+          ./kodev fetch-thirdparty
+          ./kodev build bookeen
+          ./kodev release bookeen
+
+      - name: Conferir binário ARM e gerar sha256
+        working-directory: /build/koreader
+        run: |
+          set -euo pipefail
+          file luajit
+          file luajit | grep -qi 'ARM'
+          ls -l koreader-bookeen-*.zip
+          sha256sum koreader-bookeen-*.zip | tee /build/SHA256.txt
+          unzip -l koreader-bookeen-*.zip | head -20
+
+      - name: Publicar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: koreader-bookeen
+          path: |
+            /build/koreader/koreader-bookeen-*.zip
+            /build/SHA256.txt
+          if-no-files-found: error
+          retention-days: 30
